@@ -5,7 +5,7 @@
   AI 视频图文创作助手
 </h1>
 <p align="center">
-    <em> AI 图文创作助手基于字节豆包大模型, 火山方舟高代码 SDK 构建, 支持基于任意视频/音频转换成各种风格的文档, 目前支持小红书/知识笔记/微信公众号和思维导图 </em>
+    <em> AI 图文创作助手基于AI大模型, 支持将基于任意视频/音频转换成各种风格的文档, 目前支持内容总结/小红书/知识笔记/微信公众号和思维导图 </em>
 </p>
 
 <p align="center">
@@ -45,4 +45,7 @@ AI 视频创作助手源于我年初的一个想法, 作为一个喜欢阅读的
 
 ### 📄 License
 - [MIT](./LICENSE)
+
+### Links
+- [volcengine-ai-app-lab](https://github.com/volcengine/ai-app-lab)
 
