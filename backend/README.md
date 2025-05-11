@@ -25,7 +25,7 @@ export AUC_ACCESS_TOKEN=xxxx
 
 ## 3. 启动服务
 ```bash
-python app.py
+python main.py
 ```
 
 ## 在火山引擎获取对应的环境变量的值
