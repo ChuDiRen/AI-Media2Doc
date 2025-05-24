@@ -7,13 +7,13 @@ import { AudioTaskResponse, AudioTaskResult, TaskStatus } from './types'
  * @param audioFileName 音频文件名
  * @returns 任务ID
  */
-export const submitAudioTask = async (audioFileName: string): Promise<string> => {
+export const submitAsrTask = async (audioFileName: string): Promise<string> => {
   try {
     const response = await httpService.request<AudioTaskResponse>({
       url: API_PATHS.AUDIO_TASK,
       method: 'POST',
       headers: {
-        'request-action': 'submit_audio_task',
+        'request-action': 'submit_asr_task',
       },
       data: {
         model: 'my-bot',
@@ -42,13 +42,13 @@ export const submitAudioTask = async (audioFileName: string): Promise<string> =>
  * @param taskId 任务ID
  * @returns 任务结果和状态
  */
-export const queryAudioTask = async (taskId: string): Promise<AudioTaskResult> => {
+export const queryAsrTask = async (taskId: string): Promise<AudioTaskResult> => {
   try {
     const response = await httpService.request<AudioTaskResponse>({
       url: API_PATHS.AUDIO_TASK,
       method: 'POST',
       headers: {
-        'request-action': 'query_audio_task',
+        'request-action': 'query_asr_task_status',
       },
       data: {
         model: 'my-bot',
@@ -83,7 +83,7 @@ export const queryAudioTask = async (taskId: string): Promise<AudioTaskResult> =
  * @param interval 轮询间隔(ms)
  * @returns 处理结果文本
  */
-export const pollAudioTask = async (
+export const pollAsrTask = async (
   taskId: string,
   maxAttempts = 60,
   interval = 3000
@@ -91,7 +91,7 @@ export const pollAudioTask = async (
   let attempts = 0
   
   while (attempts < maxAttempts) {
-    const result = await queryAudioTask(taskId)
+    const result = await queryAsrTask(taskId)
     console.log('Polling result:', result)
     
     if (result.status === 'finished') {
