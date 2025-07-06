@@ -3,12 +3,12 @@ import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import UploadSection from './UploadSection.vue'
 import LoadingOverlay from './LoadingOverlay.vue'
-import { loadFFmpeg, extractAudio } from '../../utils/ffmpeg'
+import { loadFFmpeg, extractAudio, captureVideoFrame, frameToBase64 } from '../../utils/ffmpeg'
 import { submitAsrTask, pollAsrTask } from '../../apis/asrService'
 import { generateMarkdownText } from '../../apis/markdownService'
 import { calculateMD5 } from '../../utils/md5'
 import { getAudioUploadUrl, uploadFile } from '../../apis'
-import { saveTask, checkTaskExistsByMd5AndStyle, getAnyTaskByMd5, getAllTasks, getTaskByID } from '../../utils/db'
+import { saveTask, checkTaskExistsByMd5AndStyle, getAnyTaskByMd5, getTaskByID } from '../../utils/db'
 import { eventBus } from '../../utils/eventBus'
 
 const stepDefs = [
@@ -43,6 +43,10 @@ const markdownContent = ref('')
 const fileMd5 = ref('')
 const fileSize = ref(0)
 const md5Calculating = ref(false)
+
+const smartScreenshot = ref(false)
+const imageCount = ref(0)
+const imageTotal = ref(0)
 
 const resetAll = () => {
   steps.value = stepDefs.map(s => ({ ...s }))
@@ -145,15 +149,32 @@ const startProcessing = async () => {
 
     // 5. 生成内容
     updateStepStatus(4, 'processing')
-    // 兼容新版协议：只传入文本
-    let plainText
+    // 处理转录文本，支持字幕格式
+    let processedText
     if (Array.isArray(transcriptionText.value) && transcriptionText.value.length > 0 && typeof transcriptionText.value[0] === 'object' && 'text' in transcriptionText.value[0]) {
-      plainText = transcriptionText.value.map(seg => seg.text).join('\n')
+      // 转换为字幕格式，包含时间戳信息
+      processedText = transcriptionText.value.map(seg => {
+        const startMin = Math.floor(seg.start_time / 60000)
+        const startSec = Math.floor((seg.start_time % 60000) / 1000)
+        const startMs = seg.start_time % 1000
+        const endMin = Math.floor(seg.end_time / 60000)
+        const endSec = Math.floor((seg.end_time % 60000) / 1000)
+        const endMs = seg.end_time % 1000
+        const startTime = `${startMin.toString().padStart(2, '0')}:${startSec.toString().padStart(2, '0')}.${startMs.toString().padStart(3, '0')}`
+        const endTime = `${endMin.toString().padStart(2, '0')}:${endSec.toString().padStart(2, '0')}.${endMs.toString().padStart(3, '0')}`
+        return `[${startTime} - ${endTime}] ${seg.text}`
+      }).join('\n')
     } else {
-      plainText = transcriptionText.value
+      processedText = transcriptionText.value
     }
-    const md = await generateMarkdownText(plainText, style.value)
-    markdownContent.value = md
+    const md = await generateMarkdownText(processedText, style.value)
+    // 提取所有时间戳标记 #image[20] 格式（整数秒数）
+    const imageTimeRegex = /#image\[(\d+)\]/g
+    const imageTimeMarkers = md.match(imageTimeRegex) || []
+    console.log('提取到的时间戳标记:', imageTimeMarkers)
+    // 新逻辑：根据开关处理截图
+    markdownContent.value = await processImageMarkers(md, file.value, imageTimeMarkers)
+
     updateStepStatus(4, 'success')
 
     // 保存
@@ -161,7 +182,7 @@ const startProcessing = async () => {
       fileName: fileName.value,
       md5: audioMd5,
       transcriptionText: transcriptionText.value,
-      markdownContent: md,
+      markdownContent: markdownContent.value, // 使用处理后的markdown内容
       contentStyle: style.value,
       createdAt: new Date().toISOString()
     }
@@ -182,6 +203,74 @@ const startProcessing = async () => {
   }
 }
 
+// 智能截图开关读取
+function isSmartScreenshotEnabled() {
+  try {
+    return localStorage.getItem('smartScreenshotEnabled') === 'true'
+  } catch {
+    return false
+  }
+}
+
+// 抽离截图处理逻辑
+async function processImageMarkers(md, file, imageTimeMarkers) {
+  // 去除掉 md 开头的 ```markdown 和 结尾的 ```
+  if (md.startsWith('```markdown')) {
+    md = md.replace(/^```markdown\s*/, '').replace(/```$/, '').trim()
+  } else if (md.startsWith('```')) {
+    md = md.replace(/^```/, '').replace(/```$/, '').trim()
+  }
+  smartScreenshot.value = isSmartScreenshotEnabled()
+  imageCount.value = 0
+  imageTotal.value = imageTimeMarkers.length
+  if (!smartScreenshot.value) {
+    // 未开启，全部替换为空
+    let result = md
+    for (const marker of imageTimeMarkers) {
+      result = result.replaceAll(marker, '')
+    }
+    imageCount.value = 0
+    imageTotal.value = 0
+    return result
+  }
+  // 已开启，执行截图逻辑
+  if (imageTimeMarkers.length > 0 && !isMP3File(file)) {
+    const videoData = new Uint8Array(await file.arrayBuffer())
+    let result = md
+    let imageIdx = 1 // 新增编号计数器
+    for (const marker of imageTimeMarkers) {
+      try {
+        // 匹配 #image[20] 形式
+        const timeMatch = marker.match(/#image\[(\d+)\]/)
+        if (timeMatch) {
+          const totalSeconds = parseInt(timeMatch[1])
+          console.log(`正在截图: ${marker} (时间: ${totalSeconds}秒) 当前进度 ${imageIdx}/${imageTimeMarkers.length}`)
+          // 捕获视频帧
+          const frameData = await captureVideoFrame(videoData, totalSeconds)
+          const base64Image = frameToBase64(frameData)
+          // 使用 HTML img 标签并加编号，设置最大宽度自适应
+          const imageTag = `<div style="text-align:center;"><span style="font-size:0.98em;color:#888;">截图${imageIdx}</span><br><img src="${base64Image}" alt="截图${imageIdx}" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 8px #0001;margin:8px 0;" /></div>`
+          result = result.replace(marker, imageTag)
+          imageCount.value = imageIdx // 实时更新进度
+          imageIdx++
+        }
+      } catch (error) {
+        console.error(`处理标记 ${marker} 时出错:`, error)
+        ElMessage.error(`处理标记 ${marker} 时出错: ${error.message}`)
+      }
+    }
+    imageCount.value = imageTotal.value // 处理完成
+    return result
+  } else if (imageTimeMarkers.length > 0 && isMP3File(file)) {
+    imageCount.value = 0
+    imageTotal.value = 0
+    return md
+  }
+  imageCount.value = 0
+  imageTotal.value = 0
+  return md
+}
+
 // 步骤百分比辅助
 const stepPercents = [10, 30, 50, 80, 100]
 const percent = computed(() => stepPercents[activeStep.value] || 0)
@@ -200,7 +289,8 @@ const stepText = computed(() => steps.value[activeStep.value]?.title || '')
           @reset="resetAll" />
       </div>
       <!-- 步骤3：处理进度（全屏loading） -->
-      <LoadingOverlay v-if="isProcessing" :step-text="stepText" :percent="percent" />
+      <LoadingOverlay v-if="isProcessing" :step-text="stepText" :percent="percent" :smart-screenshot="smartScreenshot"
+        :image-count="imageCount" :image-total="imageTotal" />
     </div>
   </div>
 </template>
