@@ -1,7 +1,8 @@
 <script setup>
-import { ElUpload, ElIcon, ElMessage, ElRadioGroup, ElRadioButton } from 'element-plus'
-import { UploadFilled, VideoCamera, Promotion, RefreshRight, Loading } from '@element-plus/icons-vue'
+import { ElUpload, ElIcon, ElMessage, ElRadioGroup, ElRadioButton, ElInput, ElButton, ElTabs, ElTabPane } from 'element-plus'
+import { UploadFilled, VideoCamera, Promotion, RefreshRight, Loading, Link } from '@element-plus/icons-vue'
 import { ref, watch } from 'vue'
+import { validateVideoUrl, parseVideoUrl } from '../../apis/videoParserService'
 
 const props = defineProps({
   ffmpegLoading: {
@@ -29,7 +30,12 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['file-selected', 'update:style', 'start-process', 'reset'])
+const emit = defineEmits(['file-selected', 'update:style', 'start-process', 'reset', 'url-selected'])
+
+// 新增状态管理
+const activeTab = ref('file') // 'file' 或 'url'
+const videoUrl = ref('')
+const urlParsing = ref(false)
 
 const allowedTypes = [
   'video/mp4',
@@ -86,7 +92,47 @@ const handleStart = () => {
   emit('start-process')
 }
 const handleReset = () => {
+  videoUrl.value = ''
+  activeTab.value = 'file'
   emit('reset')
+}
+
+// 视频链接处理函数
+const handleUrlSubmit = async () => {
+  if (!videoUrl.value.trim()) {
+    ElMessage.error('请输入视频链接')
+    return
+  }
+
+  // 验证链接格式
+  const validation = validateVideoUrl(videoUrl.value.trim())
+  if (!validation.valid) {
+    ElMessage.error(validation.error)
+    return
+  }
+
+  urlParsing.value = true
+
+  try {
+    // 解析视频链接
+    const result = await parseVideoUrl(videoUrl.value.trim())
+
+    if (result.success) {
+      ElMessage.success('视频链接解析成功')
+      // 触发URL选择事件，传递解析结果
+      emit('url-selected', {
+        url: videoUrl.value.trim(),
+        parseResult: result.data
+      })
+    } else {
+      ElMessage.error(result.error || '链接解析失败')
+    }
+  } catch (error) {
+    console.error('链接解析错误:', error)
+    ElMessage.error('链接解析失败，请检查链接是否正确')
+  } finally {
+    urlParsing.value = false
+  }
 }
 </script>
 
@@ -112,24 +158,68 @@ const handleReset = () => {
           {{ acceptHint }}
         </h3>
       </div>
-      <!-- 上传区域：仅在未上传文件时显示 -->
-      <el-upload v-if="!props.file" class="uploader" drag action="" :auto-upload="false" :on-change="handleFileChange"
-        :disabled="ffmpegLoading || isProcessing" :accept="allowedTypes.join(',') + ',.mp3'">
-        <div class="upload-content">
-          <div class="upload-icon-wrapper">
-            <el-icon class="upload-icon">
-              <UploadFilled />
-            </el-icon>
-          </div>
-          <h3 class="upload-title">
-            {{ ffmpegLoading ? '正在加载 ffmpeg，请稍候...' : '开始上传' }}
-          </h3>
-          <p class="upload-desc" v-if="!ffmpegLoading">
-            支持拖放或点击上传视频或MP3文件<br>
-            <span class="upload-formats">支持格式：MP4、MOV、AVI、MKV、WebM、MP3，最大 100MB</span>
-          </p>
-        </div>
-      </el-upload>
+      <!-- 输入方式选择：仅在未上传文件时显示 -->
+      <div v-if="!props.file" class="input-section">
+        <el-tabs v-model="activeTab" class="input-tabs">
+          <el-tab-pane label="本地文件" name="file">
+            <el-upload class="uploader" drag action="" :auto-upload="false" :on-change="handleFileChange"
+              :disabled="ffmpegLoading || isProcessing" :accept="allowedTypes.join(',') + ',.mp3'">
+              <div class="upload-content">
+                <div class="upload-icon-wrapper">
+                  <el-icon class="upload-icon">
+                    <UploadFilled />
+                  </el-icon>
+                </div>
+                <h3 class="upload-title">
+                  {{ ffmpegLoading ? '正在加载 ffmpeg，请稍候...' : '开始上传' }}
+                </h3>
+                <p class="upload-desc" v-if="!ffmpegLoading">
+                  支持拖放或点击上传视频或MP3文件<br>
+                  <span class="upload-formats">支持格式：MP4、MOV、AVI、MKV、WebM、MP3，最大 100MB</span>
+                </p>
+              </div>
+            </el-upload>
+          </el-tab-pane>
+
+          <el-tab-pane label="视频链接" name="url">
+            <div class="url-input-section">
+              <div class="url-input-wrapper">
+                <div class="url-icon-wrapper">
+                  <el-icon class="url-icon">
+                    <Link />
+                  </el-icon>
+                </div>
+                <h3 class="url-title">输入视频链接</h3>
+                <p class="url-desc">
+                  支持小鹅通平台的视频课程链接<br>
+                  <span class="url-formats">如：https://xiaoeknow.com/... 或 https://pri-cdn-tx.xiaoeknow.com/...</span>
+                </p>
+
+                <div class="url-input-form">
+                  <el-input
+                    v-model="videoUrl"
+                    placeholder="请输入小鹅通视频链接"
+                    :disabled="urlParsing || ffmpegLoading || isProcessing"
+                    size="large"
+                    clearable
+                    @keyup.enter="handleUrlSubmit"
+                  />
+                  <el-button
+                    type="primary"
+                    size="large"
+                    :loading="urlParsing"
+                    :disabled="!videoUrl.trim() || ffmpegLoading || isProcessing"
+                    @click="handleUrlSubmit"
+                    class="url-submit-btn"
+                  >
+                    {{ urlParsing ? '解析中...' : '解析链接' }}
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
       <!-- 文件信息和风格选择：上传后显示 -->
       <div v-else class="file-info-section">
         <div class="file-info-card">
@@ -626,6 +716,71 @@ const handleReset = () => {
   vertical-align: middle;
 }
 
+/* 视频链接输入样式 */
+.input-tabs {
+  margin-bottom: 20px;
+}
+
+.url-input-section {
+  padding: 40px 20px;
+  text-align: center;
+  border: 2px dashed #d9d9d9;
+  border-radius: 12px;
+  background: #fafafa;
+  transition: all 0.3s ease;
+}
+
+.url-input-section:hover {
+  border-color: #409eff;
+  background: #f0f9ff;
+}
+
+.url-input-wrapper {
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.url-icon-wrapper {
+  margin-bottom: 16px;
+}
+
+.url-icon {
+  font-size: 48px;
+  color: #409eff;
+}
+
+.url-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+  margin: 0 0 8px 0;
+}
+
+.url-desc {
+  color: #606266;
+  margin: 0 0 24px 0;
+  line-height: 1.5;
+}
+
+.url-formats {
+  font-size: 12px;
+  color: #909399;
+}
+
+.url-input-form {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.url-input-form .el-input {
+  flex: 1;
+}
+
+.url-submit-btn {
+  flex-shrink: 0;
+}
+
 @media screen and (max-width: 900px) {
   .upload-section {
     width: 98vw;
@@ -657,6 +812,15 @@ const handleReset = () => {
   .style-support-icon {
     width: 24px;
     height: 24px;
+  }
+
+  .url-input-form {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .url-submit-btn {
+    width: 100%;
   }
 }
 </style>

@@ -1,0 +1,6 @@
+[project]
+name = "ai-media2doc"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = []

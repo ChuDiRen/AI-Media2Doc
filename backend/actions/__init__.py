@@ -2,3 +2,4 @@
 from actions.asr import *  # noqa
 from actions.llm import *  # noqa
 from actions.tos import *  # noqa
+from actions.video_parser import *  # noqa

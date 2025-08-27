@@ -10,6 +10,7 @@ import { calculateMD5 } from '../../utils/md5'
 import { getAudioUploadUrl, uploadFile } from '../../apis'
 import { saveTask, checkTaskExistsByMd5AndStyle, getAnyTaskByMd5, getTaskByID } from '../../utils/db'
 import { eventBus } from '../../utils/eventBus'
+import { downloadVideoFromUrl } from '../../apis/videoParserService'
 
 const stepDefs = [
   { title: '初始化 FFmpeg', icon: 'Promotion', status: 'wait' },
@@ -48,6 +49,10 @@ const smartScreenshot = ref(false)
 const imageCount = ref(0)
 const imageTotal = ref(0)
 
+// 视频链接相关状态
+const isFromUrl = ref(false)
+const videoUrl = ref('')
+
 const resetAll = () => {
   cleanupVideoCache()
   steps.value = stepDefs.map(s => ({ ...s }))
@@ -65,6 +70,8 @@ const resetAll = () => {
   textTranscribed.value = false
   transcriptionText.value = ''
   markdownContent.value = ''
+  isFromUrl.value = false
+  videoUrl.value = ''
 }
 
 const handleFileSelected = async (f) => {
@@ -76,7 +83,49 @@ const handleFileSelected = async (f) => {
   // 计算MD5
   fileMd5.value = await calculateMD5(new Uint8Array(await f.arrayBuffer()))
   md5Calculating.value = false
+  isFromUrl.value = false
   showStyleSelector.value = true
+}
+
+// 处理视频链接选择
+const handleUrlSelected = async (urlData) => {
+  resetAll()
+
+  try {
+    isFromUrl.value = true
+    videoUrl.value = urlData.url
+
+    ElMessage.info('开始下载视频，请稍候...')
+
+    // 下载视频
+    const downloadResult = await downloadVideoFromUrl(urlData.url)
+
+    if (!downloadResult.success) {
+      ElMessage.error(downloadResult.error || '视频下载失败')
+      return
+    }
+
+    // 创建虚拟文件对象
+    const response = await fetch(`file://${downloadResult.data.local_path}`)
+    const blob = await response.blob()
+    const virtualFile = new File([blob], downloadResult.data.filename, { type: 'video/mp4' })
+
+    file.value = virtualFile
+    fileName.value = downloadResult.data.filename
+    fileSize.value = virtualFile.size
+
+    md5Calculating.value = true
+    fileMd5.value = await calculateMD5(new Uint8Array(await virtualFile.arrayBuffer()))
+    md5Calculating.value = false
+
+    showStyleSelector.value = true
+    ElMessage.success('视频下载完成，请选择生成风格')
+
+  } catch (error) {
+    console.error('视频链接处理失败:', error)
+    ElMessage.error('视频链接处理失败，请重试')
+    resetAll()
+  }
 }
 
 const handleStyleSelected = (val) => {
@@ -296,7 +345,7 @@ const stepText = computed(() => steps.value[activeStep.value]?.title || '')
       <div v-if="!isProcessing && !markdownContent" class="component-wrapper">
         <UploadSection :ffmpeg-loading="ffmpegLoading" :is-processing="isProcessing" :file="file" :file-name="fileName"
           :file-size="fileSize" :file-md5="fileMd5" :md5-calculating="md5Calculating" :style="style"
-          @file-selected="handleFileSelected" @update:style="handleStyleSelected" @start-process="startProcessing"
+          @file-selected="handleFileSelected" @url-selected="handleUrlSelected" @update:style="handleStyleSelected" @start-process="startProcessing"
           @reset="resetAll" />
       </div>
       <!-- 步骤3：处理进度（全屏loading） -->

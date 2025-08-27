@@ -3,3 +3,4 @@ opentelemetry-sdk>=1.22.0
 opentelemetry-semantic-conventions>=0.43b0
 throttled-py==2.0.2
 openai==1.88.0
+pycryptodome==3.19.0  # AES加密解密支持
