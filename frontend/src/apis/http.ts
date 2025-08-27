@@ -115,6 +115,48 @@ class HttpService {
   }
 
   /**
+   * GET请求
+   * @param url 请求URL
+   * @param config 请求配置
+   * @returns 响应数据
+   */
+  async get<T = any>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    return this.request<T>({ ...config, method: 'GET', url })
+  }
+
+  /**
+   * POST请求
+   * @param url 请求URL
+   * @param data 请求数据
+   * @param config 请求配置
+   * @returns 响应数据
+   */
+  async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
+    return this.request<T>({ ...config, method: 'POST', url, data })
+  }
+
+  /**
+   * PUT请求
+   * @param url 请求URL
+   * @param data 请求数据
+   * @param config 请求配置
+   * @returns 响应数据
+   */
+  async put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T> {
+    return this.request<T>({ ...config, method: 'PUT', url, data })
+  }
+
+  /**
+   * DELETE请求
+   * @param url 请求URL
+   * @param config 请求配置
+   * @returns 响应数据
+   */
+  async delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    return this.request<T>({ ...config, method: 'DELETE', url })
+  }
+
+  /**
    * 上传文件（使用XHR以支持进度回调）
    * @param url 上传URL
    * @param file 文件对象

@@ -20,6 +20,7 @@ from arkitect.types.llm.model import ArkChatResponse
 from throttled import Throttled, per_sec, MemoryStore
 
 from .dispatcher import ActionDispatcher
+from .xiaoe_config import get_xiaoe_config
 
 STORE = MemoryStore()
 
@@ -29,8 +30,20 @@ class VideoParserError(Exception):
 
 class XiaoETongParser:
     """小鹅通视频解析器"""
-    
-    def __init__(self):
+
+    def __init__(self, cookie: Optional[str] = None, app_id: Optional[str] = None, host: Optional[str] = None):
+        """
+        初始化解析器
+
+        Args:
+            cookie: 小鹅通Cookie（可选）
+            app_id: 小鹅通APP ID（可选）
+            host: 小鹅通域名（可选）
+        """
+        # 初始化配置管理器
+        self.config = get_xiaoe_config(cookie=cookie, app_id=app_id, host=host)
+
+        # 基础请求头（将被配置管理器的headers覆盖）
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': '*/*',
@@ -53,18 +66,95 @@ class XiaoETongParser:
             r'\.xiaoe\.com',    # 通用小鹅通域名
         ]
         return any(re.search(pattern, url) for pattern in xiaoe_patterns)
-    
+
+    def _extract_from_live_page(self, page_url: str) -> str:
+        """从直播页面提取M3U8链接"""
+        try:
+            print(f"🎬 解析直播页面: {page_url}")
+
+            # 提取资源ID
+            resource_match = re.search(r'/p/t_pc/live_pc/pc/(l_[a-zA-Z0-9]+)', page_url)
+            if not resource_match:
+                raise VideoParserError("无法从URL中提取资源ID")
+
+            resource_id = resource_match.group(1)
+            print(f"📋 提取到资源ID: {resource_id}")
+
+            # 获取页面内容
+            headers = self.config.get_headers(referer=page_url)
+            response = requests.get(page_url, headers=headers, timeout=30)
+            response.raise_for_status()
+
+            html_content = response.text
+            print(f"📄 页面获取成功，长度: {len(html_content)}")
+
+            # 查找多种可能的视频链接模式
+            m3u8_patterns = [
+                # 标准M3U8链接
+                r'https?://[^"\s]+\.m3u8[^"\s]*',
+                # 小鹅通视频API
+                r'https?://[^"\s]*xiaoe[^"\s]*\.m3u8[^"\s]*',
+                # 腾讯云视频
+                r'https?://[^"\s]*myqcloud\.com[^"\s]*\.m3u8[^"\s]*',
+                # 视频播放配置
+                r'"video_url"\s*:\s*"([^"]+)"',
+                r'"playUrl"\s*:\s*"([^"]+)"',
+                r'"src"\s*:\s*"([^"]+\.m3u8[^"]*)"',
+                # JavaScript中的视频配置
+                r'videoUrl\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+                r'playUrl\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+            ]
+
+            found_urls = []
+            for pattern in m3u8_patterns:
+                matches = re.findall(pattern, html_content, re.IGNORECASE)
+                for match in matches:
+                    url = match if isinstance(match, str) else match[0] if match else None
+                    if url and url.endswith('.m3u8'):
+                        found_urls.append(url)
+                        print(f"🎯 找到M3U8链接: {url}")
+
+            if found_urls:
+                # 返回第一个找到的M3U8链接
+                return found_urls[0]
+
+            # 如果没有找到M3U8链接，尝试查找API端点
+            print("🔍 未找到直接的M3U8链接，尝试查找API端点...")
+
+            api_patterns = [
+                r'/api/[^"\s]*video[^"\s]*',
+                r'/api/[^"\s]*play[^"\s]*',
+                r'/xe\.[^"\s]*\.get[^"\s]*',
+            ]
+
+            for pattern in api_patterns:
+                matches = re.findall(pattern, html_content)
+                for match in matches:
+                    print(f"🔍 找到可能的API端点: {match}")
+                    # 这里可以进一步调用API获取视频信息
+
+            raise VideoParserError("未找到有效的M3U8链接")
+
+        except Exception as e:
+            print(f"❌ 直播页面解析失败: {str(e)}")
+            raise VideoParserError(f"直播页面解析失败: {str(e)}")
+
     def extract_m3u8_url(self, page_url: str) -> str:
         """从页面URL提取M3U8链接"""
         try:
             print(f"🔍 开始提取M3U8链接: {page_url}")
 
-            # 添加更多请求头以绕过反爬虫
-            enhanced_headers = {
-                **self.headers,
-                'Referer': page_url,
-                'X-Requested-With': 'XMLHttpRequest'
-            }
+            # 检查是否是直播页面格式
+            if '/p/t_pc/live_pc/pc/' in page_url:
+                print("🎬 检测到直播页面格式，使用专门的解析逻辑")
+                return self._extract_from_live_page(page_url)
+
+            # 使用认证信息的请求头
+            enhanced_headers = self.config.get_headers(referer=page_url)
+            enhanced_headers.update({
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            })
 
             response = requests.get(page_url, headers=enhanced_headers, timeout=30)
             response.raise_for_status()
@@ -72,30 +162,26 @@ class XiaoETongParser:
             print(f"📄 页面获取成功，长度: {len(response.text)}")
 
             # 首先尝试从Nuxt.js的__NUXT__对象中提取数据
-            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*(\{.*?\});?\s*$', response.text, re.MULTILINE | re.DOTALL)
+            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*(.+?);?\s*(?=</script>|$)', response.text, re.DOTALL)
             if nuxt_match:
                 print("🎯 找到Nuxt.js数据对象")
                 try:
-                    # 简化的JSON解析，查找视频相关数据
                     nuxt_content = nuxt_match.group(1)
+                    print(f"📊 Nuxt数据长度: {len(nuxt_content)} 字符")
 
-                    # 在Nuxt数据中查找视频URL模式
-                    video_patterns = [
-                        r'"video_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
-                        r'"play_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
-                        r'"playUrl"\s*:\s*"([^"]*\.m3u8[^"]*)"',
-                        r'"hls_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
-                        r'"m3u8_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
-                    ]
+                    # 尝试提取课程信息和视频数据
+                    video_result = self._extract_video_from_nuxt(nuxt_content, page_url)
+                    if video_result and video_result != "COURSE_CONTENT_ONLY":
+                        return video_result
+                    elif video_result == "COURSE_CONTENT_ONLY":
+                        # 直接抛出特殊异常，让上层处理
+                        raise VideoParserError("COURSE_CONTENT_ONLY")
 
-                    for pattern in video_patterns:
-                        matches = re.findall(pattern, nuxt_content, re.IGNORECASE)
-                        if matches:
-                            m3u8_url = matches[0].replace('\\/', '/').replace('\/', '/')
-                            print(f"✅ 从Nuxt数据中找到视频URL: {m3u8_url}")
-                            if self.is_valid_m3u8_url(m3u8_url):
-                                return m3u8_url
-
+                except VideoParserError as e:
+                    # 如果是课程内容标识，重新抛出让上层处理
+                    if str(e) == "COURSE_CONTENT_ONLY":
+                        raise e
+                    print(f"⚠️ 解析Nuxt数据失败: {str(e)}")
                 except Exception as e:
                     print(f"⚠️ 解析Nuxt数据失败: {str(e)}")
 
@@ -182,10 +268,85 @@ class XiaoETongParser:
         except requests.RequestException as e:
             raise VideoParserError(f"获取页面内容失败: {str(e)}")
     
+    def _extract_video_from_nuxt(self, nuxt_content: str, page_url: str) -> Optional[str]:
+        """从Nuxt数据中提取视频信息"""
+        try:
+            print("🔍 分析Nuxt数据结构...")
+
+            # 查找视频相关的URL模式
+            video_patterns = [
+                r'"video_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
+                r'"play_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
+                r'"playUrl"\s*:\s*"([^"]*\.m3u8[^"]*)"',
+                r'"hls_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
+                r'"m3u8_url"\s*:\s*"([^"]*\.m3u8[^"]*)"',
+                # 腾讯云视频链接
+                r'"(https?://[^"]*myqcloud\.com[^"]*\.m3u8[^"]*)"',
+                r'"(https?://[^"]*\.myqcloud\.com[^"]*)"',
+                # 小鹅通视频链接
+                r'"(https?://[^"]*xiaoeknow\.com[^"]*\.m3u8[^"]*)"',
+                r'"(https?://[^"]*\.xiaoe-tech\.com[^"]*)"',
+            ]
+
+            for i, pattern in enumerate(video_patterns):
+                matches = re.findall(pattern, nuxt_content, re.IGNORECASE)
+                if matches:
+                    print(f"📹 Nuxt模式 {i+1} 找到 {len(matches)} 个匹配")
+                    for match in matches:
+                        m3u8_url = match.replace('\\/', '/').replace('\/', '/')
+                        # 确保URL格式正确
+                        if not m3u8_url.startswith('http'):
+                            if m3u8_url.startswith('//'):
+                                m3u8_url = 'https:' + m3u8_url
+                            elif m3u8_url.startswith('/'):
+                                from urllib.parse import urlparse
+                                parsed = urlparse(page_url)
+                                m3u8_url = f"{parsed.scheme}://{parsed.netloc}" + m3u8_url
+
+                        print(f"🎯 检查Nuxt提取的URL: {m3u8_url}")
+                        if self.is_valid_m3u8_url(m3u8_url):
+                            print(f"✅ 从Nuxt数据中找到有效链接: {m3u8_url}")
+                            return m3u8_url
+
+            # 如果没有找到直接的视频链接，尝试查找课程信息
+            print("🔍 查找课程信息...")
+            course_patterns = [
+                r'"title"\s*:\s*"([^"]+)"',
+                r'"seo_title"\s*:\s*"([^"]+)"',
+                r'"course_title"\s*:\s*"([^"]+)"',
+            ]
+
+            course_title = None
+            for pattern in course_patterns:
+                matches = re.findall(pattern, nuxt_content, re.IGNORECASE)
+                if matches:
+                    course_title = matches[0]
+                    print(f"📚 找到课程标题: {course_title}")
+                    break
+
+            # 如果找到课程信息但没有视频链接，返回课程信息用于生成知识笔记
+            if course_title:
+                print(f"💡 未找到视频链接，但找到课程信息: {course_title}")
+                print("📚 这可能是一个文本/图片课程，可以生成基于页面内容的知识笔记")
+                # 这里我们返回一个特殊标识，表示需要基于页面内容生成知识笔记
+                return "COURSE_CONTENT_ONLY"
+
+            # 即使没有找到明确的课程标题，也尝试生成内容
+            print("💡 未找到明确的视频链接或课程标题，但页面有内容，尝试生成知识笔记")
+            return "COURSE_CONTENT_ONLY"
+
+            return None
+
+        except Exception as e:
+            print(f"❌ Nuxt数据提取异常: {str(e)}")
+            return None
+
     def is_valid_m3u8_url(self, url: str) -> bool:
         """验证M3U8链接有效性"""
         try:
-            response = requests.head(url, headers=self.headers, timeout=10)
+            # 使用认证信息的请求头
+            headers = self.config.get_headers()
+            response = requests.head(url, headers=headers, timeout=10)
             return response.status_code == 200
         except:
             return False
@@ -200,17 +361,34 @@ class XiaoETongParser:
                 print("❌ 不是小鹅通链接")
                 return None
 
+            # 验证配置
+            is_valid, error_msg = self.config.validate_config()
+            if not is_valid:
+                print(f"⚠️ 配置验证失败: {error_msg}")
+                return {
+                    "title": "小鹅通视频课程（需要配置）",
+                    "platform": "小鹅通",
+                    "video_url": None,
+                    "format": "unknown",
+                    "original_url": page_url,
+                    "status": "需要配置",
+                    "message": f"请配置小鹅通认证信息: {error_msg}"
+                }
+
+            # 从URL中提取信息
+            url_info = self.config.extract_info_from_url(page_url)
+
             # 首先尝试从页面URL中提取资源ID
-            resource_id = self._extract_resource_id(page_url)
+            resource_id = url_info.get('resource_id') or self._extract_resource_id(page_url)
             if resource_id:
                 print(f"📋 提取到资源ID: {resource_id}")
 
-                # 检查资源权限状态
-                permission_info = self._check_xiaoe_permissions(page_url, resource_id)
+                # 检查资源权限状态（使用认证信息）
+                permission_info = self._check_xiaoe_permissions_with_auth(page_url, resource_id, url_info)
                 print(f"🔐 权限检查结果: {permission_info}")
 
-                # 尝试通过API获取视频信息
-                api_video_info = await self._get_video_info_from_api(page_url, resource_id)
+                # 尝试通过API获取视频信息（使用认证信息）
+                api_video_info = await self._get_video_info_from_api_with_auth(page_url, resource_id, url_info)
                 if api_video_info:
                     # 合并权限信息
                     api_video_info.update(permission_info)
@@ -219,6 +397,12 @@ class XiaoETongParser:
             # 如果API方法失败，尝试传统的页面解析方法
             try:
                 m3u8_url = self.extract_m3u8_url(page_url)
+
+                # 检查是否返回了特殊标识
+                if m3u8_url == "COURSE_CONTENT_ONLY":
+                    print("📚 未找到视频链接，但可以基于课程内容生成知识笔记")
+                    return await self._generate_course_content_info(page_url)
+
                 print(f"📹 找到M3U8链接: {m3u8_url}")
 
                 # 解析M3U8文件
@@ -239,24 +423,132 @@ class XiaoETongParser:
                 return video_info
 
             except VideoParserError as e:
-                print(f"❌ 传统解析失败: {str(e)}")
+                error_msg = str(e)
+                print(f"❌ 传统解析失败: {error_msg}")
 
-                # 最后尝试：返回基本信息，表示检测到视频但无法获取播放链接
+                # 检查是否是课程内容标识
+                if error_msg == "COURSE_CONTENT_ONLY":
+                    print("📚 检测到课程内容，生成知识笔记...")
+                    try:
+                        return await self._generate_course_content_info(page_url)
+                    except Exception as content_error:
+                        print(f"⚠️ 页面内容解析失败: {str(content_error)}")
+
+                # 尝试基于页面内容生成知识笔记
+                print("💡 尝试基于页面内容生成知识笔记...")
+                try:
+                    return await self._generate_course_content_info(page_url)
+                except Exception as content_error:
+                    print(f"⚠️ 页面内容解析也失败: {str(content_error)}")
+
+                # 最后尝试：返回课程信息，支持生成知识笔记
                 return {
-                    "title": "小鹅通视频课程（需要登录或付费）",
+                    "title": "小鹅通课程内容",
                     "platform": "小鹅通",
                     "video_url": None,
-                    "format": "unknown",
+                    "format": "course_content",  # 标识为课程内容而非视频
                     "segments_count": 0,
                     "has_encryption": False,
                     "original_url": page_url,
-                    "status": "需要进一步处理",
-                    "message": "检测到小鹅通视频，但可能需要登录或付费才能获取播放链接"
+                    "status": "course_content_ready",  # 表示可以处理课程内容
+                    "message": "检测到小鹅通课程内容，可以生成知识笔记",
+                    "content_type": "course",  # 内容类型
+                    "can_generate_notes": True  # 可以生成笔记
                 }
 
         except Exception as e:
             print(f"❌ 解析异常: {str(e)}")
             return None
+
+    async def _generate_course_content_info(self, page_url: str) -> Dict:
+        """基于页面内容生成课程信息"""
+        try:
+            print("📚 开始提取课程内容信息...")
+
+            # 获取页面内容
+            headers = self.config.get_headers(referer=page_url)
+            response = requests.get(page_url, headers=headers, timeout=30)
+            response.raise_for_status()
+
+            html_content = response.text
+
+            # 提取课程标题
+            title_patterns = [
+                r'<title>([^<]+)</title>',
+                r'<h1[^>]*>([^<]+)</h1>',
+                r'<h2[^>]*>([^<]+)</h2>',
+                r'"title"\s*:\s*"([^"]+)"',
+                r'"seo_title"\s*:\s*"([^"]+)"',
+            ]
+
+            course_title = "小鹅通课程"
+            for pattern in title_patterns:
+                matches = re.findall(pattern, html_content, re.IGNORECASE)
+                if matches:
+                    course_title = matches[0].strip()
+                    if course_title and len(course_title) > 3:  # 确保标题有意义
+                        break
+
+            # 提取课程描述/内容
+            content_patterns = [
+                r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)</div>',
+                r'<p[^>]*>(.*?)</p>',
+            ]
+
+            course_content = ""
+            for pattern in content_patterns:
+                matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if matches:
+                    # 清理HTML标签
+                    for match in matches[:3]:  # 只取前3个匹配
+                        clean_text = re.sub(r'<[^>]+>', '', match).strip()
+                        if clean_text and len(clean_text) > 10:
+                            course_content += clean_text + "\n\n"
+                    if course_content:
+                        break
+
+            # 如果没有找到具体内容，使用页面文本
+            if not course_content:
+                # 简单提取页面主要文本内容
+                text_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL)
+                text_content = re.sub(r'<style[^>]*>.*?</style>', '', text_content, flags=re.DOTALL)
+                text_content = re.sub(r'<[^>]+>', '', text_content)
+                text_content = re.sub(r'\s+', ' ', text_content).strip()
+
+                if len(text_content) > 100:
+                    course_content = text_content[:1000] + "..." if len(text_content) > 1000 else text_content
+
+            print(f"📚 提取到课程标题: {course_title}")
+            print(f"📝 提取到内容长度: {len(course_content)} 字符")
+
+            return {
+                "title": course_title,
+                "platform": "小鹅通",
+                "video_url": None,
+                "format": "course_content",
+                "original_url": page_url,
+                "status": "content_extracted",
+                "message": "成功提取课程内容，可以生成知识笔记",
+                "content_type": "course",
+                "can_generate_notes": True,
+                "course_content": course_content,  # 课程内容
+                "content_length": len(course_content)
+            }
+
+        except Exception as e:
+            print(f"❌ 课程内容提取失败: {str(e)}")
+            return {
+                "title": "小鹅通课程",
+                "platform": "小鹅通",
+                "video_url": None,
+                "format": "course_content",
+                "original_url": page_url,
+                "status": "extraction_failed",
+                "message": f"课程内容提取失败: {str(e)}",
+                "content_type": "course",
+                "can_generate_notes": False
+            }
 
     def _extract_resource_id(self, page_url: str) -> Optional[str]:
         """从页面URL中提取资源ID"""
@@ -269,8 +561,102 @@ class XiaoETongParser:
         except Exception:
             return None
 
+    async def _get_video_info_from_api_with_auth(self, page_url: str, resource_id: str, url_info: Dict) -> Optional[Dict]:
+        """使用认证信息通过API获取视频信息"""
+        try:
+            print(f"🔗 尝试通过API获取视频信息（带认证）: {resource_id}")
+
+            from urllib.parse import urlparse
+            parsed = urlparse(page_url)
+            domain = url_info.get('host') or parsed.netloc
+            app_id = url_info.get('app_id') or self.config.app_id
+
+            # 基于实际测试的API端点
+            api_endpoints = [
+                # 小鹅通标准API端点
+                f"https://appapi.xiaoe-tech.com/xe.course.business.course_detail.get/1.0.0",
+                f"https://api.xiaoe-tech.com/xe.course.business.course_detail.get/1.0.0",
+                # 自定义域名API端点（可能需要不同路径）
+                f"https://{domain}/api/course/detail",
+                f"https://{domain}/course/detail",
+                f"https://{domain}/detail/api",
+            ]
+
+            for api_url in api_endpoints:
+                try:
+                    print(f"🔍 尝试API端点: {api_url}")
+
+                    # 基于参考项目的参数结构
+                    api_data = {
+                        "resource_id": resource_id,
+                        "resource_type": 6,  # 专栏类型
+                    }
+
+                    if app_id:
+                        api_data["app_id"] = app_id
+
+                    # 使用带认证的请求头
+                    headers = self.config.get_headers(referer=page_url)
+                    headers['Content-Type'] = 'application/json'
+
+                    response = requests.post(
+                        api_url,
+                        json=api_data,
+                        headers=headers,
+                        timeout=15
+                    )
+
+                    print(f"📊 API响应状态: {response.status_code}")
+
+                    if response.status_code == 200:
+                        try:
+                            result = response.json()
+                            print(f"📊 API响应内容: {result}")
+
+                            # 解析API响应中的视频信息
+                            if 'data' in result and result.get('code') == 0:
+                                data = result['data']
+
+                                # 提取视频相关信息
+                                video_info = {
+                                    "title": data.get('title', '小鹅通课程'),
+                                    "platform": "小鹅通",
+                                    "video_url": self._extract_video_url_from_data(data),
+                                    "format": "api_extracted",
+                                    "duration": data.get('duration', 0),
+                                    "original_url": page_url,
+                                    "resource_id": resource_id,
+                                    "resource_type": data.get('resource_type', 6),
+                                    "is_free": data.get('is_free', 0),
+                                    "have_password": data.get('have_password', 0),
+                                    "authenticated": True
+                                }
+
+                                if video_info["video_url"]:
+                                    print(f"✅ API成功获取视频信息: {video_info}")
+                                    return video_info
+                                else:
+                                    print("⚠️ API响应中未找到视频URL")
+                            else:
+                                print(f"⚠️ API返回错误: {result.get('msg', '未知错误')}")
+
+                        except json.JSONDecodeError as e:
+                            print(f"❌ JSON解析失败: {str(e)}")
+
+                except requests.RequestException as e:
+                    print(f"❌ API请求失败: {str(e)}")
+                    continue
+
+            return None
+
+        except Exception as e:
+            print(f"❌ API获取视频信息异常: {str(e)}")
+            return None
+
     async def _get_video_info_from_api(self, page_url: str, resource_id: str) -> Optional[Dict]:
-        """尝试通过API获取视频信息"""
+        """尝试通过API获取视频信息（兼容性方法）"""
+        url_info = self.config.extract_info_from_url(page_url)
+        return await self._get_video_info_from_api_with_auth(page_url, resource_id, url_info)
         try:
             print(f"🔗 尝试通过API获取视频信息: {resource_id}")
 
@@ -421,33 +807,41 @@ class XiaoETongParser:
 
         return None
 
-    def _check_xiaoe_permissions(self, page_url: str, resource_id: str) -> Dict:
-        """检查小鹅通资源的权限状态"""
+    def _check_xiaoe_permissions_with_auth(self, page_url: str, resource_id: str, url_info: Dict) -> Dict:
+        """使用认证信息检查小鹅通资源的权限状态"""
         try:
-            print(f"🔐 检查资源权限: {resource_id}")
+            print(f"🔐 检查资源权限（带认证）: {resource_id}")
 
             from urllib.parse import urlparse
             parsed = urlparse(page_url)
-            domain = parsed.netloc
+            domain = url_info.get('host') or parsed.netloc
 
             # 基于日志中发现的权限检查API
             permission_url = f"https://{domain}/xe.course.business.course_detail.get/1.0.0"
 
             permission_data = {
                 "resource_id": resource_id.replace('l_', 'p_'),  # 转换资源ID格式
-                "resource_type": 6  # 专栏类型
+                "resource_type": 6,  # 专栏类型
+                "app_id": url_info.get('app_id') or self.config.app_id
             }
+
+            # 使用带认证的请求头
+            headers = self.config.get_headers(referer=page_url)
 
             response = requests.post(
                 permission_url,
                 json=permission_data,
-                headers=self.headers,
+                headers=headers,
                 timeout=10
             )
 
+            print(f"📊 权限检查响应状态: {response.status_code}")
+
             if response.status_code == 200:
                 result = response.json()
-                if 'data' in result:
+                print(f"📊 权限检查响应: {result}")
+
+                if 'data' in result and result.get('code') == 0:
                     data = result['data']
                     return {
                         "has_permission": data.get('permission', 0) == 1,
@@ -456,14 +850,27 @@ class XiaoETongParser:
                         "have_password": data.get('have_password', 0) == 1,
                         "is_stop_sell": data.get('is_stop_sell', 0) == 1,
                         "title": data.get('title', ''),
-                        "jump_url": data.get('jump_url', '')
+                        "jump_url": data.get('jump_url', ''),
+                        "authenticated": True
+                    }
+                else:
+                    return {
+                        "has_permission": False,
+                        "error": result.get('msg', '权限检查失败'),
+                        "code": result.get('code', -1),
+                        "authenticated": True
                     }
 
-            return {"has_permission": False, "error": "无法获取权限信息"}
+            return {"has_permission": False, "error": f"HTTP错误: {response.status_code}", "authenticated": False}
 
         except Exception as e:
             print(f"❌ 权限检查失败: {str(e)}")
-            return {"has_permission": False, "error": str(e)}
+            return {"has_permission": False, "error": str(e), "authenticated": False}
+
+    def _check_xiaoe_permissions(self, page_url: str, resource_id: str) -> Dict:
+        """检查小鹅通资源的权限状态（兼容性方法）"""
+        url_info = self.config.extract_info_from_url(page_url)
+        return self._check_xiaoe_permissions_with_auth(page_url, resource_id, url_info)
     
     def parse_m3u8(self, m3u8_url: str) -> Dict:
         """解析M3U8文件"""
@@ -646,10 +1053,23 @@ class XiaoETongParser:
 async def parse_video_url(request: ArkChatRequest):
     """解析视频链接"""
     video_url = request.messages[0].content
-    
+
     try:
-        parser = XiaoETongParser()
-        
+        # 使用带认证的解析器（从环境变量获取认证信息）
+        import os
+        from dotenv import load_dotenv
+
+        # 加载环境变量（使用绝对路径）
+        env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'variables.env')
+        load_dotenv(env_path)
+
+        # 临时硬编码认证信息进行测试
+        parser = XiaoETongParser(
+            cookie='shop_version_type=8; LANGUAGE_appi1Q1B9A05586=cn; sensorsdata2015jssdkcross=%7B%22%24device_id%22%3A%22198ea7eaa5e1cd-0f7fbbf9b3e0e6-26011051-3686400-198ea7eaa5f1db1%22%7D; sajssdk_2015_new_user_www_hctestedu_com=1; appId="appi1Q1B9A05586"; sa_jssdk_2015_www_hctestedu_com=%7B%22distinct_id%22%3A%22u_62f09711ec9f7_LLWry09iox%22%2C%22first_id%22%3A%22198ea7eaa5e1cd-0f7fbbf9b3e0e6-26011051-3686400-198ea7eaa5f1db1%22%2C%22props%22%3A%7B%7D%7D; anonymous_user_key=dV9hbm9ueW1vdXNfNjhhZWM4OGExNGZlYl8wbGd3OURENUpv; pc_user_key=9ddae9873b3ce6afb0153f08dd4afd4a; xenbyfpfUnhLsdkZbX=0; show_user_icon=1; app_id="appi1Q1B9A05586"; userInfo={"address":null,"app_id":"appi1Q1B9A05586","birth":null,"can_modify_phone":true,"company":null,"job":null,"universal_union_id":"oTHW5v2fhyTCXbrlIbm2fbF6AyyI","user_id":"u_62f09711ec9f7_LLWry09iox","wx_account":"","wx_avatar":"http://wechatavator-1252524126.file.myqcloud.com/appi1Q1B9A05586/image/compress/u_62f09711ec9f7_LLWry09iox_20220811_bfb44a.jpeg","wx_gender":0,"phone":"18819073882","pc_user_key":"9ddae9873b3ce6afb0153f08dd4afd4a","permission_visit":0,"permission_comment":0,"permission_buy":0,"pwd_isset":false,"channels":[{"type":"wechat","active":1},{"type":"qq","active":0}]}',
+            app_id='appi1Q1B9A05586',
+            host='www.hctestedu.com'
+        )
+
         # 检查是否为支持的链接
         if not parser.is_xiaoe_url(video_url):
             raise APIException(
@@ -657,16 +1077,44 @@ async def parse_video_url(request: ArkChatRequest):
                 code="400",
                 http_code=400
             )
-        
-        # 提取M3U8链接
-        if video_url.endswith('.m3u8'):
-            m3u8_url = video_url
-        else:
-            m3u8_url = parser.extract_m3u8_url(video_url)
-        
-        # 解析M3U8信息
-        m3u8_info = parser.parse_m3u8(m3u8_url)
-        
+
+        # 使用新的完整解析方法
+        video_info = await parser.parse_video_info(video_url)
+
+        if not video_info:
+            raise APIException(
+                message="视频解析失败: 无法获取视频信息",
+                code="500",
+                http_code=500
+            )
+
+        # 构建响应数据
+        metadata = {
+            "title": video_info.get("title", "未知标题"),
+            "platform": video_info.get("platform", "小鹅通"),
+            "video_url": video_info.get("video_url"),
+            "format": video_info.get("format", "unknown"),
+            "original_url": video_info.get("original_url", video_url),
+            "status": video_info.get("status", "success"),
+            "message": video_info.get("message", "解析成功"),
+            "content_type": video_info.get("content_type", "video"),
+            "can_generate_notes": video_info.get("can_generate_notes", False)
+        }
+
+        # 如果是视频内容，添加视频相关信息
+        if video_info.get("video_url"):
+            metadata.update({
+                "segments_count": video_info.get("segments_count", 0),
+                "has_encryption": video_info.get("has_encryption", False)
+            })
+
+        # 如果是课程内容，添加课程相关信息
+        if video_info.get("course_content"):
+            metadata.update({
+                "course_content": video_info.get("course_content"),
+                "content_length": video_info.get("content_length", 0)
+            })
+
         yield ArkChatResponse(
             id="parse_video_url",
             choices=[],
@@ -675,14 +1123,9 @@ async def parse_video_url(request: ArkChatRequest):
             object="chat.completion",
             usage=None,
             bot_usage=None,
-            metadata={
-                "m3u8_url": m3u8_url,
-                "total_segments": m3u8_info['total_segments'],
-                "has_encryption": m3u8_info['encryption'] is not None,
-                "status": "success"
-            }
+            metadata=metadata
         )
-        
+
     except VideoParserError as e:
         raise APIException(
             message=f"视频解析失败: {str(e)}",
@@ -743,6 +1186,64 @@ async def download_video_from_url(request: ArkChatRequest):
     except Exception as e:
         raise APIException(
             message=f"下载过程中发生错误: {str(e)}",
+            code="500",
+            http_code=500
+        )
+
+
+@ActionDispatcher.register("test_xiaoe_auth")
+async def test_xiaoe_auth(request: ArkChatRequest):
+    """测试小鹅通认证"""
+    try:
+        # 从请求中获取可选的认证信息
+        message_content = request.messages[0].content
+        auth_info = {}
+
+        try:
+            import json
+            auth_info = json.loads(message_content) if message_content.strip().startswith('{') else {}
+        except:
+            pass
+
+        # 创建配置实例
+        config = get_xiaoe_config(
+            cookie=auth_info.get('cookie'),
+            app_id=auth_info.get('app_id'),
+            host=auth_info.get('host')
+        )
+
+        # 验证配置
+        is_valid, error_msg = config.validate_config()
+
+        # 测试认证
+        auth_result = config.test_authentication()
+
+        # 获取用户信息（如果认证成功）
+        user_info = None
+        if auth_result.get('authenticated'):
+            user_info = config.get_user_info()
+
+        yield ArkChatResponse(
+            id="test_xiaoe_auth",
+            choices=[],
+            created=int(time.time()),
+            model="",
+            object="chat.completion",
+            usage=None,
+            bot_usage=None,
+            metadata={
+                "config_valid": is_valid,
+                "config_error": error_msg if not is_valid else None,
+                "auth_result": auth_result,
+                "user_info": user_info,
+                "status": "success" if is_valid and auth_result.get('authenticated') else "failed"
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ 小鹅通认证测试失败: {str(e)}")
+        raise APIException(
+            message=f"认证测试失败: {str(e)}",
             code="500",
             http_code=500
         )

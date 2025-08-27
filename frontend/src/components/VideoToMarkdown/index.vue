@@ -95,6 +95,36 @@ const handleUrlSelected = async (urlData) => {
     isFromUrl.value = true
     videoUrl.value = urlData.url
 
+    console.log('处理URL数据:', urlData)
+
+    // 检查是否是课程内容而不是视频
+    if (urlData.format === 'course_content' || urlData.content_type === 'course') {
+      ElMessage.info('检测到课程内容，直接生成知识笔记...')
+
+      // 对于课程内容，直接使用课程内容生成转录文本
+      if (urlData.course_content) {
+        transcriptionText.value = `课程标题：${urlData.title}\n\n课程内容：\n${urlData.course_content}`
+      } else {
+        transcriptionText.value = `课程标题：${urlData.title}\n\n平台：${urlData.platform}\n\n说明：${urlData.message}`
+      }
+
+      // 设置文件信息
+      fileName.value = `${urlData.title}.txt`
+      fileSize.value = transcriptionText.value.length
+
+      // 生成MD5（基于课程内容）
+      md5Calculating.value = true
+      const encoder = new TextEncoder()
+      const data = encoder.encode(transcriptionText.value)
+      fileMd5.value = await calculateMD5(data)
+      md5Calculating.value = false
+
+      // 跳过音频处理步骤，直接显示样式选择器
+      showStyleSelector.value = true
+      ElMessage.success('课程内容解析完成，请选择生成样式')
+      return
+    }
+
     ElMessage.info('开始下载视频，请稍候...')
 
     // 下载视频

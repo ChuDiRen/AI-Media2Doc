@@ -12,6 +12,7 @@ import httpService from './http'
 export const parseVideoUrl = async (videoUrl) => {
   try {
     const response = await httpService.post('/api/v3/bots/chat/completions', {
+      model: 'video-parser',  // 添加必需的model参数
       messages: [{ role: 'user', content: videoUrl }]
     }, {
       headers: {
@@ -19,13 +20,30 @@ export const parseVideoUrl = async (videoUrl) => {
       }
     })
     
+    // 添加调试信息
+    console.log('API响应:', response)
+    console.log('响应数据:', response.data)
+    console.log('metadata:', response.data?.metadata)
+    console.log('直接metadata:', response.metadata)
+
+    // 检查不同的响应结构
+    let metadata = null
     if (response.data && response.data.metadata) {
+      metadata = response.data.metadata
+    } else if (response.metadata) {
+      metadata = response.metadata
+    } else if (response.data) {
+      // 如果response.data就是我们需要的数据
+      metadata = response.data
+    }
+
+    if (metadata) {
       return {
         success: true,
-        data: response.data.metadata
+        data: metadata
       }
     }
-    
+
     throw new Error('解析响应格式错误')
   } catch (error) {
     console.error('视频链接解析失败:', error)
@@ -44,6 +62,7 @@ export const parseVideoUrl = async (videoUrl) => {
 export const downloadVideoFromUrl = async (videoUrl) => {
   try {
     const response = await httpService.post('/api/v3/bots/chat/completions', {
+      model: 'video-downloader',  // 添加必需的model参数
       messages: [{ role: 'user', content: videoUrl }]
     }, {
       headers: {
@@ -89,7 +108,11 @@ export const validateVideoUrl = (url) => {
     /xiaoeknow\.com/i,
     /pri-cdn-tx\.xiaoeknow\.com/i,
     /vod2\.myqcloud\.com.*\.m3u8/i,
-    /xiaoe-tech\.com/i
+    /xiaoe-tech\.com/i,
+    /hctestedu\.com/i,  // 华测教育自定义域名
+    /\.xet\.citv\.cn/i,  // 小鹅通标准域名格式
+    /app[a-zA-Z0-9]+\.h5\.xiaoeknow\.com/i,  // 小鹅通H5域名
+    /detail\/l_[a-zA-Z0-9]+/i  // 小鹅通课程详情页面路径
   ]
   
   const isXiaoeUrl = xiaoePatterns.some(pattern => pattern.test(url))
@@ -117,15 +140,51 @@ export const getSupportedPlatforms = () => {
       examples: [
         'https://xiaoeknow.com/...',
         'https://pri-cdn-tx.xiaoeknow.com/...',
-        'https://vod2.myqcloud.com/...m3u8'
+        'https://vod2.myqcloud.com/...m3u8',
+        'https://www.hctestedu.com/detail/l_xxx/...',
+        'https://appisb9y2un7034.xet.citv.cn/...'
       ]
     }
   ]
+}
+
+/**
+ * 测试小鹅通认证
+ * @param {Object} authConfig - 认证配置 {cookie, app_id, host}
+ * @returns {Promise<Object>} 测试结果
+ */
+export const testXiaoEAuth = async (authConfig) => {
+  try {
+    const response = await httpService.post('/api/v3/bots/chat/completions', {
+      model: 'xiaoe-auth-test',  // 添加必需的model参数
+      messages: [{ role: 'user', content: JSON.stringify(authConfig) }]
+    }, {
+      headers: {
+        'request-action': 'test_xiaoe_auth'
+      }
+    })
+
+    if (response.data && response.data.metadata) {
+      return {
+        success: true,
+        data: response.data.metadata
+      }
+    }
+
+    throw new Error('测试响应格式错误')
+  } catch (error) {
+    console.error('小鹅通认证测试失败:', error)
+    return {
+      success: false,
+      error: error.response?.data?.message || error.message || '测试失败'
+    }
+  }
 }
 
 export default {
   parseVideoUrl,
   downloadVideoFromUrl,
   validateVideoUrl,
-  getSupportedPlatforms
+  getSupportedPlatforms,
+  testXiaoEAuth
 }

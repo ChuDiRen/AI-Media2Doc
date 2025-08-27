@@ -92,7 +92,10 @@ AI 视频图文创作助手是一款 Web 工具, 基于 AI 大模型, 一键将�
 ```shell
 $ make docker-image
 ```
-2️⃣：请根据 [后端部署指引 / 配置项说明](https://github.com/hanshuaikang/AI-Media2Doc/blob/main/backend/README.md#%E5%9C%A8%E7%81%AB%E5%B1%B1%E5%BC%95%E6%93%8E%E8%8E%B7%E5%8F%96%E5%AF%B9%E5%BA%94%E7%9A%84%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E7%9A%84%E5%80%BC) 完善根目录下的 `variables.env` 文件。 
+2️⃣：配置环境变量：
+   - 复制 `variables.env.example` 为 `variables.env`
+   - 请根据 [后端部署指引 / 配置项说明](https://github.com/hanshuaikang/AI-Media2Doc/blob/main/backend/README.md#%E5%9C%A8%E7%81%AB%E5%B1%B1%E5%BC%95%E6%93%8E%E8%8E%B7%E5%8F%96%E5%AF%B9%E5%BA%94%E7%9A%84%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E7%9A%84%E5%80%BC) 填写真实的配置值
+   - ⚠️ **重要**：`variables.env` 文件包含敏感信息，已被 `.gitignore` 忽略，请勿提交到版本控制
 
 3️⃣：运行项目,在项目根目录下执行:
 
